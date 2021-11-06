@@ -1,6 +1,10 @@
 use clap::{App, Arg};
+use env_logger;
+use zuul;
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    env_logger::init();
     let matches = App::new("A zuul client")
         .arg(
             Arg::with_name("url")
@@ -17,9 +21,14 @@ fn main() {
         )
         .get_matches();
     let api = matches.value_of("url").unwrap();
-    println!("The api: {}", api);
+    let client = zuul::create_client(api).unwrap();
     match matches.value_of("build") {
-        Some(build) => println!("Getting build: {}", build),
-        None => println!("Getting any build"),
+        Some(build) => {
+            println!("Getting build: {}", build);
+        }
+        None => {
+            let builds = client.builds().await.unwrap();
+            println!("Builds: {:?}", builds);
+        }
     }
 }

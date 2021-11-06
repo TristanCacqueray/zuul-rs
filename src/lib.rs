@@ -6,7 +6,62 @@
 //! `zuul` is a client library to interface with [zuul-ci](https://zuul-ci.org).
 
 use chrono::{DateTime, Utc};
+use log::debug;
+use reqwest;
 use serde::{Deserialize, Serialize};
+use serde_json;
+use url::{ParseError, Url};
+
+/// The client
+pub struct Zuul {
+    client: reqwest::Client,
+    api: Url,
+}
+
+/// Parse the api root url, ensuring it is slash terminated to enable Path::join
+fn parse_root_url(url: &str) -> Result<Url, ParseError> {
+    let mut url = Url::parse(url)?;
+    if url.path().chars().last().unwrap() != '/' {
+        let new_path = format!("{}/", String::from(url.path()));
+        url.set_path(&new_path);
+    }
+    Ok(url)
+}
+
+/// Helper function to validate the api url and creates a client
+pub fn create_client(api: &str) -> Result<Zuul, ParseError> {
+    let url = parse_root_url(api)?;
+    Ok(Zuul::new(url))
+}
+
+impl Zuul {
+    /// Create a new client
+    pub fn new(api: Url) -> Self {
+        Zuul {
+            client: reqwest::Client::new(),
+            api,
+        }
+    }
+
+    /// Get latest builds with optional decoding error
+    pub async fn builds(&self) -> Result<Vec<serde_json::Result<Build>>, reqwest::Error> {
+        let mut url = self.api.join("builds").unwrap();
+        url.query_pairs_mut()
+            .append_pair("completed", "true")
+            .append_pair("limit", "20");
+        debug!("Querying build {}", url);
+        let resp = self.client.get(url).send().await?;
+        let builds: Vec<serde_json::Value> = resp.json().await?;
+        Ok(builds.iter().map(|b| Build::deserialize(b)).collect())
+    }
+
+    /// Get latest builds (and panic on decoding error)
+    pub async fn builds_unsafe(&self) -> Result<Vec<Build>, reqwest::Error> {
+        let builds = self.builds().await?;
+        let builds: Result<Vec<Build>, _> = builds.into_iter().collect();
+        Ok(builds.expect("Invalid build json"))
+    }
+}
 
 /// A Build result
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -107,6 +162,72 @@ mod rounded_float {
 mod tests {
     use super::*;
     use chrono::{Duration, NaiveDateTime};
+
+    #[test]
+    fn it_parse_url() {
+        let assert_url =
+            |url, expected: &str| assert_eq!(parse_root_url(url).unwrap().to_string(), expected);
+        assert_url("https://example.com", "https://example.com/");
+        assert_url("https://example.com/", "https://example.com/");
+        assert_url("https://example.com/api", "https://example.com/api/");
+        assert_url("https://example.com/api/", "https://example.com/api/");
+    }
+
+    fn make_build(uuid: &str, end_time: DateTime<Utc>) -> Build {
+        Build {
+            uuid: String::from(uuid),
+            job_name: "job".to_string(),
+            result: "SUCCESS".to_string(),
+            start_time: end_time + Duration::minutes(-42),
+            end_time,
+            duration: 42,
+            voting: true,
+            log_url: Some("http://localhost/".to_string() + &String::from(uuid)),
+            artifacts: [].to_vec(),
+            project: "project".to_string(),
+            branch: "main".to_string(),
+            pipeline: "check".to_string(),
+            change: Some(42),
+            patchset: None,
+            change_ref: "head".to_string(),
+            event_id: "uuid".to_string(),
+        }
+    }
+
+    /// Helper function to drop milli second from a DateTime so that the json encoding round trip
+    fn drop_milli(dt: DateTime<Utc>) -> DateTime<Utc> {
+        let ts = dt.timestamp();
+        DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(ts, 0), Utc)
+    }
+
+    #[tokio::test]
+    async fn it_get_builds() {
+        use httpmock::prelude::*;
+        let now = drop_milli(Utc::now());
+        let builds = [
+            make_build("build1", now),
+            make_build("build2", now + Duration::hours(-1)),
+        ];
+
+        // Start a lightweight mock server.
+        let server = MockServer::start();
+
+        // Create a mock on the server.
+        let m = server.mock(|when, then| {
+            when.method(GET)
+                .path("/builds")
+                .query_param("completed", "true");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!(builds.to_vec()));
+        });
+
+        // Get builds
+        let client = create_client(&server.url("/")).unwrap();
+        let got = client.builds_unsafe().await.unwrap();
+        m.assert();
+        assert_eq!(got, builds);
+    }
 
     #[test]
     fn it_decodes_build() {

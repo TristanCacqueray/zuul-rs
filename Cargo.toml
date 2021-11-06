@@ -15,15 +15,19 @@ categories = ["client"]
 
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+log = "0.4"
+reqwest = { version = "0.11", features = ["json", "gzip"] }
+tokio = { version = "1", features = ["full"] }
+url = { version = "2", features = ["serde"] }
 
 [dev-dependencies]
 clap = "^2"
+env_logger = "0.9"
+httpmock = "0.6"
 
 [[example]]
 name = "zuul-build"
