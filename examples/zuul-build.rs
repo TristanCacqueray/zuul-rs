@@ -1,11 +1,4 @@
 use clap::{App, Arg};
-use serde::Deserialize;
-
-#[derive(Deserialize, Debug)]
-struct Build {
-    url: String,
-    job_name: String,
-}
 
 fn main() {
     let matches = App::new("A zuul client")

@@ -1,12 +1,30 @@
 [package]
-name = "zuul-rs"
+name = "zuul"
 version = "0.1.0"
-authors = ["Tristan Cacqueray <tdecacqu@redhat.com>"]
+
+license = "Apache-2.0"
+repository = "https://github.com/TristanCacqueray/zuul-rs"
+documentation = "https://docs.rs/zuul/"
+authors = ["TristanCacqueray"]
+readme = "README.md"
+
+description = "A client library to interface with https://zuul-ci.org."
+
+keywords = ["iterator", "zuul"]
+categories = ["client"]
+
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-reqwest = "0.11"
-clap = "*"
-serde = "*"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+clap = "^2"
+
+[[example]]
+name = "zuul-build"
+path = "examples/zuul-build.rs"
