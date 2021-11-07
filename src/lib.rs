@@ -5,11 +5,19 @@
 //!
 //! `zuul` is a client library to interface with [zuul-ci](https://zuul-ci.org).
 
+use async_stream::stream;
 use chrono::{DateTime, Utc};
-use log::debug;
+use futures_core::stream::Stream;
+use futures_util::StreamExt;
+use log::{debug, error};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::collections::HashSet;
+use std::thread;
+use std::time::Duration;
+use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tokio_retry::Retry;
 use url::{ParseError, Url};
 
 /// The client
@@ -43,12 +51,87 @@ impl Zuul {
         }
     }
 
+    /// Produce a continuous stream of unique build.
+    pub fn builds_tail(
+        &self,
+        loop_delay: Duration,
+        since: Option<String>,
+    ) -> impl Stream<Item = Build> + '_ {
+        let mut since = since.clone();
+        stream! {
+            loop {
+                match since.clone() {
+                    Some(uuid) => {
+                        for await (idx, build) in self.builds_stream().enumerate() {
+                            if (idx == 0) {
+                                since = Some(build.uuid.clone());
+                            }
+                            match &build.uuid[..] == uuid {
+                                true => break,
+                                false => yield build
+                            }
+                        }
+                    },
+                    None => {
+                        // get latest build
+                        let mut builds = self.builds(0, 1).await.unwrap();
+                        if let Some(Ok(build)) = builds.pop() {
+                            debug!("Current latest build is {:?}", build);
+                            since = Some(build.uuid.clone());
+                        }
+                        if let None = since {
+                            panic!("Could not get the latest build");
+                        }
+                    }
+                }
+                debug!("Now sleeping {:?}", loop_delay);
+                thread::sleep(loop_delay);
+            }
+        }
+    }
+
+    /// Produce a stream of unique build.
+    pub fn builds_stream(&self) -> impl Stream<Item = Build> + '_ {
+        let mut offset = 0;
+        let mut known_builds = HashSet::new();
+        stream! {
+            loop {
+                let retry_strategy = ExponentialBackoff::from_millis(10).max_delay(Duration::from_secs(13))
+                    .map(jitter).take(10);
+                let action = || self.builds(offset, 20);
+                let builds = Retry::spawn(retry_strategy, action).await.unwrap();
+                offset += builds.len() as u32;
+                for build_result in builds {
+                    match build_result {
+                        Ok(build) if known_builds.contains(&build.uuid)=> {
+                            // The page moved between request, we skip the known build
+                            // perhaps we should reset the offset to catchup the new one?
+                        },
+                        Ok(build) => {
+                            // Keep track of yieled build to avoid duplicate
+                            known_builds.insert(build.uuid.clone());
+                            yield build;
+                        },
+                        Err(e) => {
+                            error!("Failed to decode build: {:?}", e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Get latest builds with optional decoding error
-    pub async fn builds(&self) -> Result<Vec<serde_json::Result<Build>>, reqwest::Error> {
+    pub async fn builds(
+        &self,
+        skip: u32,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Result<Build>>, reqwest::Error> {
         let mut url = self.api.join("builds").unwrap();
         url.query_pairs_mut()
-            .append_pair("completed", "true")
-            .append_pair("limit", "20");
+            .append_pair("complete", "true")
+            .append_pair("skip", &skip.to_string())
+            .append_pair("limit", &limit.to_string());
         debug!("Querying build {}", url);
         let resp = self.client.get(url).send().await?;
         let builds: Vec<serde_json::Value> = resp.json().await?;
@@ -57,7 +140,7 @@ impl Zuul {
 
     /// Get latest builds (and panic on decoding error)
     pub async fn builds_unsafe(&self) -> Result<Vec<Build>, reqwest::Error> {
-        let builds = self.builds().await?;
+        let builds = self.builds(0, 20).await?;
         let builds: Result<Vec<Build>, _> = builds.into_iter().collect();
         Ok(builds.expect("Invalid build json"))
     }
@@ -162,6 +245,8 @@ mod rounded_float {
 mod tests {
     use super::*;
     use chrono::{Duration, NaiveDateTime};
+    use futures_util::pin_mut;
+    use futures_util::stream::StreamExt;
 
     #[test]
     fn it_parse_url() {
@@ -201,6 +286,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn it_stream_builds() {
+        use env_logger;
+        env_logger::init();
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+
+        let now = drop_milli(Utc::now());
+        let b0 = make_build("42", now);
+        let b1 = make_build("build1", now);
+        let b2 = make_build("build2", now);
+        let b3 = make_build("build3", now);
+        // Simulate a sliding page
+        let page1 = serde_json::json!([b1.clone(), b2.clone()].to_vec());
+        let page2 = serde_json::json!([b2.clone(), b3.clone()].to_vec());
+
+        let m0 = server.mock(|when, then| {
+            when.method(GET).path("/builds").query_param("limit", "1");
+            then.status(200).json_body(serde_json::json!([b0]));
+        });
+        let m1 = server.mock(|when, then| {
+            when.method(GET).path("/builds").query_param("skip", "0");
+            then.status(200).json_body(page1);
+        });
+        let m2 = server.mock(|when, then| {
+            when.method(GET).path("/builds").query_param("skip", "2");
+            then.status(200).json_body(page2);
+        });
+
+        let client = create_client(&server.url("/")).unwrap();
+        let mut got = Vec::new();
+        let s = client.builds_tail(std::time::Duration::from_millis(50), None);
+        pin_mut!(s); // needed for iteration
+        while let Some(build) = s.next().await {
+            println!("got {:?}", build);
+            got.push(build);
+            if got.len() >= 3 {
+                break;
+            }
+        }
+        m0.assert();
+        m1.assert();
+        m2.assert();
+        assert_eq!(got, [b1, b2, b3].to_vec());
+    }
+
+    #[tokio::test]
     async fn it_get_builds() {
         use httpmock::prelude::*;
         let now = drop_milli(Utc::now());
@@ -216,7 +347,7 @@ mod tests {
         let m = server.mock(|when, then| {
             when.method(GET)
                 .path("/builds")
-                .query_param("completed", "true");
+                .query_param("complete", "true");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(serde_json::json!(builds.to_vec()));
