@@ -1,10 +1,36 @@
 #![warn(missing_docs)]
 #![crate_name = "zuul"]
 
-//! # Zuul
+//! This library provides a client to interface with [zuul-ci](https://zuul-ci.org).
 //!
-//! `zuul` is a client library to interface with [zuul-ci](https://zuul-ci.org).
-
+//! # Installation
+//!
+//! Add this to your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! zuul = "0.1"
+//! ```
+//!
+//! # Example
+//!
+//! ```rust, no_run
+//! # extern crate tokio;
+//! #[tokio::main]
+//! async fn main() -> Result<(), reqwest::Error> {
+//!     // Create the client
+//!     let client = zuul::create_client("https://zuul.example.org/api/tenant/name")
+//!             .expect("Invalid url");
+//!
+//!     // Print the last 20 builds
+//!     let builds = client.builds(0, 20).await?;
+//!     println!("{:?}", builds);
+//! # Ok(())
+//! }
+//! ```
+//!
+//! Checkout the [zuul-build.rs](https://github.com/TristanCacqueray/zuul-rs/blob/main/examples/zuul-build.rs)
+//! example for a complete async-stream usage.
 use async_stream::stream;
 use chrono::{DateTime, Utc};
 use futures_core::stream::Stream;
@@ -20,13 +46,13 @@ use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
 use url::{ParseError, Url};
 
-/// The client
+/// The client.
 pub struct Zuul {
     client: reqwest::Client,
     api: Url,
 }
 
-/// Parse the api root url, ensuring it is slash terminated to enable Path::join
+/// Parse the api root url, ensuring it is slash terminated to enable Path::join.
 fn parse_root_url(url: &str) -> Result<Url, ParseError> {
     let mut url = Url::parse(url)?;
     if url.path().chars().last().unwrap() != '/' {
@@ -36,7 +62,7 @@ fn parse_root_url(url: &str) -> Result<Url, ParseError> {
     Ok(url)
 }
 
-/// Helper function to validate the api url and creates a client
+/// Helper function to validate the api url and creates a client.
 pub fn create_client(api: &str) -> Result<Zuul, ParseError> {
     let url = parse_root_url(api)?;
     Ok(Zuul::new(url))
@@ -121,7 +147,7 @@ impl Zuul {
         }
     }
 
-    /// Get latest builds with optional decoding error
+    /// Get latest builds with optional decoding error.
     pub async fn builds(
         &self,
         skip: u32,
@@ -138,7 +164,7 @@ impl Zuul {
         Ok(builds.iter().map(|b| Build::deserialize(b)).collect())
     }
 
-    /// Get latest builds (and panic on decoding error)
+    /// Get latest builds (and panic on decoding error).
     pub async fn builds_unsafe(&self) -> Result<Vec<Build>, reqwest::Error> {
         let builds = self.builds(0, 20).await?;
         let builds: Result<Vec<Build>, _> = builds.into_iter().collect();
@@ -146,53 +172,53 @@ impl Zuul {
     }
 }
 
-/// A Build result
+/// A Build result.
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Build {
-    /// The build unique id
+    /// The build unique id.
     pub uuid: String,
-    /// The job name
+    /// The job name.
     pub job_name: String,
-    /// The job result
+    /// The job result.
     pub result: String,
-    /// The start time
+    /// The start time.
     #[serde(with = "python_utc_without_trailing_z")]
     pub start_time: DateTime<Utc>,
-    /// The end time
+    /// The end time.
     #[serde(with = "python_utc_without_trailing_z")]
     pub end_time: DateTime<Utc>,
-    /// The job duration in second
+    /// The job duration in second.
     #[serde(with = "rounded_float")]
     pub duration: u32,
-    /// The job voting status
+    /// The job voting status.
     pub voting: bool,
-    /// The log url
+    /// The log url.
     pub log_url: Option<String>,
-    /// The build artifacts
+    /// The build artifacts.
     pub artifacts: Vec<Artifact>,
-    /// The change's project name
+    /// The change's project name.
     pub project: String,
-    /// The change's branch name
+    /// The change's branch name.
     pub branch: String,
-    /// The build pipeline
+    /// The build pipeline.
     pub pipeline: String,
-    /// The change (or PR) number
+    /// The change (or PR) number.
     pub change: Option<u64>,
-    /// The patchset number (or PR commit)
+    /// The patchset number (or PR commit).
     pub patchset: Option<String>,
-    /// The change ref
+    /// The change ref.
     #[serde(rename = "ref")]
     pub change_ref: String,
-    /// The internal event id
+    /// The internal event id.
     pub event_id: String,
 }
 
-/// A Build artifact
+/// A Build artifact.
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Artifact {
-    /// The artifact name
+    /// The artifact name.
     pub name: String,
-    /// The artifact url
+    /// The artifact url.
     pub url: String,
 }
 
