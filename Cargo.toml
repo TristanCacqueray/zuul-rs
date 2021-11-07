@@ -11,7 +11,7 @@ readme = "README.md"
 description = "A client library to interface with https://zuul-ci.org."
 
 keywords = ["iterator", "zuul"]
-categories = ["client"]
+categories = ["api-bindings", "development-tools"]
 
 edition = "2018"
 
